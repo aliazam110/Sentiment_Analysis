@@ -2,7 +2,7 @@ import torch
 import pandas as pd
 import numpy as np
 from tensorflow.keras.preprocessing.sequence import pad_sequences
-from .utils import clean_text
+from utils import clean_text
 
 def predict_sentiment(text, model, tokenizer, label_encoder, device, max_len=100):
     cleaned = clean_text(text)

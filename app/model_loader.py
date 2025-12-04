@@ -1,6 +1,6 @@
 import torch
 import pickle
-from app.utils import LSTMClassifier
+from utils import LSTMClassifier
 
 def load_model_components():
     # Load tokenizer and label encoder
