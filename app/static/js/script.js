@@ -32,6 +32,11 @@ document.addEventListener('DOMContentLoaded', function() {
             });
             
             if (!response.ok) {
+                // If unauthorized, redirect to login
+                if (response.status === 401 || response.status === 302) {
+                    window.location.href = '/login';
+                    return;
+                }
                 throw new Error('Network response was not ok');
             }
             
