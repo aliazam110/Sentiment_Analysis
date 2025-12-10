@@ -12,12 +12,12 @@ from models import UserCreate
 
 import mysql.connector
 from mysql.connector import Error
-
+    
 import os
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 app = FastAPI(title="PayFast Sentiment Analysis", description="Sentiment analysis API for PayFast")
-
+    
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
