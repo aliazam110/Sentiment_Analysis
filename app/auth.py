@@ -2,10 +2,10 @@ import bcrypt
 from datetime import datetime, timedelta
 from jose import JWTError, jwt
 from typing import Optional
-import os
-    
+from models import UserRole
+
 # JWT settings
-SECRET_KEY = os.environ.get("SECRET_KEY")
+SECRET_KEY = "your-secret-key-change-in-production"  # Change this to a secure random key
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
@@ -39,3 +39,10 @@ def verify_token(token: str):
         return email
     except JWTError:
         return None
+
+def get_user_role(email: str) -> Optional[UserRole]:
+    from crud import get_user_by_email
+    user = get_user_by_email(email)
+    if user:
+        return UserRole(user["role"])
+    return None

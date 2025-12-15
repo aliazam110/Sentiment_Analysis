@@ -25,7 +25,7 @@ def create_tables():
     
     cursor = connection.cursor()
     
-    # Create users table
+    # Create users table with role column
     create_users_table = """
     CREATE TABLE IF NOT EXISTS users (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -33,12 +33,26 @@ def create_tables():
         email VARCHAR(255) NOT NULL UNIQUE,
         cnic VARCHAR(255) NOT NULL UNIQUE,
         password VARCHAR(255) NOT NULL,
+        role ENUM('user', 'admin') DEFAULT 'user',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """
+    
+    # Create reviews table
+    create_reviews_table = """
+    CREATE TABLE IF NOT EXISTS reviews (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        review_text TEXT NOT NULL,
+        sentiment_results JSON NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     )
     """
     
     try:
         cursor.execute(create_users_table)
+        cursor.execute(create_reviews_table)
         connection.commit()
         print("Tables created successfully")
     except Error as e:
@@ -46,12 +60,3 @@ def create_tables():
     finally:
         cursor.close()
         connection.close()
-
-        
-if __name__ == "__main__":
-    conn = get_db_connection()
-    if conn:
-        print("Connection successful!")
-        conn.close()
-    else:
-        print("Connection failed!")

@@ -1,44 +1,34 @@
-from fastapi import FastAPI, Request, Form, Depends, HTTPException, status
+from fastapi import APIRouter, Request, Form, Depends, HTTPException, status
 from fastapi.templating import Jinja2Templates
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.exceptions import HTTPException
-from starlette.middleware.sessions import SessionMiddleware
 from model_loader import load_model_components
 from predict import predict_sentiment
-from database import get_db_connection, create_tables
+from database import get_db_connection
 from auth import hash_password, verify_password, create_access_token, verify_token, ACCESS_TOKEN_EXPIRE_MINUTES
 from models import UserCreate
 import mysql.connector
 from mysql.connector import Error
 from datetime import timedelta
+import json
 
-app = FastAPI(title="PayFast Sentiment Analysis", description="Sentiment analysis API for PayFast")
-
-app.mount("/static", StaticFiles(directory="static"), name="static")
+router = APIRouter()
 templates = Jinja2Templates(directory="templates")
 
-# Add session middleware for storing JWT token in session
-app.add_middleware(SessionMiddleware, secret_key="your-session-secret-key")
-
-# Initialize database tables on startup
-@app.on_event("startup")
-def startup_event():
-    create_tables()
-
+# Load model components once
 model, tokenizer, label_encoder, device, max_len = load_model_components()
 
 # Landing page
-@app.get("/", response_class=HTMLResponse)
+@router.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
 # Signup page
-@app.get("/signup", response_class=HTMLResponse)
+@router.get("/signup", response_class=HTMLResponse)
 async def signup_page(request: Request):
     return templates.TemplateResponse("signup.html", {"request": request})
 
-@app.post("/signup")
+@router.post("/signup")
 async def signup(request: Request):
     form_data = await request.form()
     name = form_data.get("name")
@@ -93,11 +83,13 @@ async def signup(request: Request):
         connection.close()
 
 # Login page
-@app.get("/login", response_class=HTMLResponse)
+@router.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
+    # Clear any existing session
+    request.session.clear()
     return templates.TemplateResponse("login.html", {"request": request})
 
-@app.post("/login")
+@router.post("/login")
 async def login(request: Request):
     form_data = await request.form()
     email = form_data.get("email")
@@ -126,11 +118,19 @@ async def login(request: Request):
             data={"sub": user["email"]}, expires_delta=access_token_expires
         )
         
-        # Store token in session
+        # Store user info in session
+        request.session["user"] = user["email"]
         request.session["access_token"] = access_token
         
         # Redirect to review page
-        return RedirectResponse(url="/review", status_code=303)
+        response = RedirectResponse(url="/review", status_code=303)
+        
+        # Add cache control headers
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        
+        return response
     except Error as e:
         print(f"Database error: {e}")
         raise HTTPException(status_code=500, detail="Login failed")
@@ -145,35 +145,148 @@ async def login(request: Request):
 
 # Dependency to get current user
 def get_current_user(request: Request):
+    user = request.session.get("user")
+    if not user:
+        return None
+    
     token = request.session.get("access_token")
     if not token:
-        raise HTTPException(status_code=302, detail="Not authenticated", headers={"Location": "/login"})
+        return None
     
     email = verify_token(token)
     if email is None:
-        raise HTTPException(status_code=302, detail="Invalid token", headers={"Location": "/login"})
+        return None
     
     return email
 
 # Review page (protected)
-@app.get("/review", response_class=HTMLResponse)
-async def review_page(request: Request, user: str = Depends(get_current_user)):
-    return templates.TemplateResponse("review.html", {"request": request, "user": user})
+@router.get("/review", response_class=HTMLResponse)
+async def review_page(request: Request):
+    user = get_current_user(request)
+    if user is None:
+        return RedirectResponse(url="/login", status_code=302)
+    
+    response = templates.TemplateResponse("review.html", {"request": request, "user": user})
+    
+    # Add cache control headers
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    
+    return response
 
 # Logout
-@app.get("/logout")
+@router.get("/logout")
 async def logout(request: Request):
-    request.session.pop("access_token", None)
-    return RedirectResponse(url="/")
+    # Clear session
+    request.session.clear()
+    
+    # Create response with redirect
+    response = RedirectResponse(url="/login")
+    response.delete_cookie("session")
+    # Add cache control headers
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    
+    return response
 
 # Prediction endpoint (protected)
-@app.post("/predict")
-async def predict(request: Request, user: str = Depends(get_current_user)):
+@router.post("/predict")
+async def predict(request: Request):
+    user = get_current_user(request)
+    if user is None:
+        return JSONResponse(status_code=401, content={"error": "Not authenticated"})
+    
     form_data = await request.form()
     text = form_data.get("text")
     
     if not text:
         return {"error": "No text provided"}
     
+    # Get sentiment analysis results
     results = predict_sentiment(text, model, tokenizer, label_encoder, device, max_len)
-    return results
+    
+    # Get user ID
+    connection = get_db_connection()
+    if connection is None:
+        return {"error": "Database connection failed"}
+    
+    cursor = connection.cursor(dictionary=True)
+    
+    try:
+        # Get user ID
+        cursor.execute("SELECT id FROM users WHERE email = %s", (user,))
+        user_data = cursor.fetchone()
+        
+        if not user_data:
+            return {"error": "User not found"}
+        
+        user_id = user_data["id"]
+        
+        # Store review and results in database using CRUD function
+        from crud import create_review
+        review = create_review(user_id, text, results)
+        
+        if not review:
+            return {"error": "Failed to store review"}
+        
+        return results
+    except Error as e:
+        print(f"Database error: {e}")
+        return {"error": "Failed to store review"}
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        return {"error": "An unexpected error occurred"}
+    finally:
+        cursor.close()
+        connection.close()
+
+@router.get("/api/user-reviews")
+async def get_user_reviews(request: Request):
+    # Check if user is authenticated
+    user = get_current_user(request)
+    if user is None:
+        return JSONResponse(status_code=401, content={"error": "Not authenticated"})
+    
+    # Get user ID
+    connection = get_db_connection()
+    if connection is None:
+        return JSONResponse(status_code=500, content={"error": "Database connection failed"})
+    
+    cursor = connection.cursor(dictionary=True)
+    
+    try:
+        # Get user ID
+        cursor.execute("SELECT id FROM users WHERE email = %s", (user,))
+        user_data = cursor.fetchone()
+        
+        if not user_data:
+            return JSONResponse(status_code=404, content={"error": "User not found"})
+        
+        user_id = user_data["id"]
+        
+        # Get user reviews
+        cursor.execute(
+            "SELECT id, review_text, created_at FROM reviews WHERE user_id = %s ORDER BY created_at DESC LIMIT 5",
+            (user_id,)
+        )
+        reviews = cursor.fetchall()
+        
+        return reviews
+    except Error as e:
+        print(f"Database error: {e}")
+        return JSONResponse(status_code=500, content={"error": "Failed to fetch reviews"})
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        return JSONResponse(status_code=500, content={"error": "An unexpected error occurred"})
+    finally:
+        cursor.close()
+        connection.close()
+
+@router.get("/api/check-auth")
+async def check_auth(request: Request):
+    user = get_current_user(request)
+    if user is None:
+        return JSONResponse(status_code=401, content={"authenticated": False})
+    return {"authenticated": True, "user": user}
