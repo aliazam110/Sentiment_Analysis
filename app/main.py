@@ -16,14 +16,13 @@ app = FastAPI(title="PayFast Sentiment Analysis", description="Sentiment analysi
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
-# Use environment variable for secret key with fallback
 app.add_middleware(
     SessionMiddleware, 
-    secret_key=os.environ.get("SECRET_KEY", "your-secret-key-here"),
+    secret_key=os.environ.get("SECRET_KEY"),
     session_cookie="session_id",
-    max_age=14 * 24 * 60 * 60,  # 14 days
-    https_only=False,  # Set to False if testing on HTTP
-    same_site="lax"  # Helps with CSRF protection
+    max_age=14 * 24 * 60 * 60,
+    https_only=False, 
+    same_site="lax"
 )
 
 # Initialize database tables on startup

@@ -10,6 +10,7 @@ from models import UserCreate
 import mysql.connector
 from mysql.connector import Error
 from datetime import timedelta
+from models import UserRole
 import json
 
 router = APIRouter()
@@ -61,10 +62,10 @@ async def signup(request: Request):
         if existing_user:
             raise HTTPException(status_code=400, detail="Email or CNIC already registered")
         
-        # Insert new user
+        # Insert new user with default role as USER
         cursor.execute(
-            "INSERT INTO users (name, email, cnic, password) VALUES (%s, %s, %s, %s)",
-            (name, email, cnic, hashed_password)
+            "INSERT INTO users (name, email, cnic, password, role) VALUES (%s, %s, %s, %s, %s)",
+            (name, email, cnic, hashed_password, UserRole.USER.value)
         )
         connection.commit()
         
@@ -78,9 +79,27 @@ async def signup(request: Request):
     except Exception as e:
         print(f"Unexpected error: {e}")
         raise HTTPException(status_code=500, detail="An unexpected error occurred")
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        raise HTTPException(status_code=500, detail="An unexpected error occurred")
     finally:
-        cursor.close()
-        connection.close()
+        # 1. Close cursor safely
+        if 'cursor' in locals() and cursor is not None:
+            try:
+                # The .close() method should handle cleanup, but we wrap it
+                cursor.close()
+            except Error as e:
+                # Catching the InternalError specifically
+                if "Unread result found" in str(e):
+                    print("Warning: Ignoring 'Unread result found' during cleanup.")
+                else:
+                    raise # Re-raise if it's a different DB error
+            except Exception:
+                 pass # Ignore other potential close errors
+
+        # 2. Close connection safely
+        if 'connection' in locals() and connection is not None:
+            connection.close()
 
 # Login page
 @router.get("/login", response_class=HTMLResponse)
@@ -88,6 +107,60 @@ async def login_page(request: Request):
     # Clear any existing session
     request.session.clear()
     return templates.TemplateResponse("login.html", {"request": request})
+
+# @router.post("/login")
+# async def login(request: Request):
+#     form_data = await request.form()
+#     email = form_data.get("email")
+#     password = form_data.get("password")
+    
+#     if not email or not password:
+#         raise HTTPException(status_code=400, detail="Email and password are required")
+    
+#     connection = get_db_connection()
+#     if connection is None:
+#         raise HTTPException(status_code=500, detail="Database connection failed")
+    
+#     cursor = connection.cursor(dictionary=True)
+    
+#     try:
+#         # Get user by email
+#         cursor.execute("SELECT * FROM users WHERE email = %s", (email,))
+#         user = cursor.fetchone()
+        
+#         if not user or not verify_password(password, user["password"]):
+#             raise HTTPException(status_code=401, detail="Invalid email or password")
+        
+#         # Create access token
+#         access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+#         access_token = create_access_token(
+#             data={"sub": user["email"]}, expires_delta=access_token_expires
+#         )
+        
+#         # Store user info in session
+#         request.session["user"] = user["email"]
+#         request.session["access_token"] = access_token
+        
+#         # Redirect to review page
+#         response = RedirectResponse(url="/review", status_code=303)
+        
+#         # Add cache control headers
+#         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+#         response.headers["Pragma"] = "no-cache"
+#         response.headers["Expires"] = "0"
+        
+#         return response
+#     except Error as e:
+#         print(f"Database error: {e}")
+#         raise HTTPException(status_code=500, detail="Login failed")
+#     except HTTPException:
+#         raise
+#     except Exception as e:
+#         print(f"Unexpected error: {e}")
+#         raise HTTPException(status_code=500, detail="An unexpected error occurred")
+#     finally:
+#         cursor.close()
+#         connection.close()
 
 @router.post("/login")
 async def login(request: Request):
@@ -105,7 +178,6 @@ async def login(request: Request):
     cursor = connection.cursor(dictionary=True)
     
     try:
-        # Get user by email
         cursor.execute("SELECT * FROM users WHERE email = %s", (email,))
         user = cursor.fetchone()
         
@@ -121,9 +193,15 @@ async def login(request: Request):
         # Store user info in session
         request.session["user"] = user["email"]
         request.session["access_token"] = access_token
+        request.session["role"] = user.get("role", "user") 
         
-        # Redirect to review page
-        response = RedirectResponse(url="/review", status_code=303)
+        # Redirect based on role
+        if user.get("role") == "admin":
+            redirect_url = "/admin/dashboard"
+        else:
+            redirect_url = "/review"
+            
+        response = RedirectResponse(url=redirect_url, status_code=303)
         
         # Add cache control headers
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
@@ -143,7 +221,26 @@ async def login(request: Request):
         cursor.close()
         connection.close()
 
+
+
+
 # Dependency to get current user
+# def get_current_user(request: Request):
+#     user = request.session.get("user")
+#     if not user:
+#         return None
+    
+#     token = request.session.get("access_token")
+#     if not token:
+#         return None
+    
+#     email = verify_token(token)
+#     if email is None:
+#         return None
+    
+#     return email
+
+
 def get_current_user(request: Request):
     user = request.session.get("user")
     if not user:
@@ -159,13 +256,32 @@ def get_current_user(request: Request):
     
     return email
 
+def get_current_user_with_role(request: Request):
+    user = request.session.get("user")
+    if not user:
+        return None, None
+    
+    token = request.session.get("access_token")
+    if not token:
+        return None, None
+    
+    role = request.session.get("role")
+    
+    email = verify_token(token)
+    if email is None:
+        return None, None
+    
+    return email, role
+
+
 # Review page (protected)
 @router.get("/review", response_class=HTMLResponse)
 async def review_page(request: Request):
-    user = get_current_user(request)
-    if user is None:
+    user, role = get_current_user_with_role(request)
+
+    if user is None or role != "user":
         return RedirectResponse(url="/login", status_code=302)
-    
+
     response = templates.TemplateResponse("review.html", {"request": request, "user": user})
     
     # Add cache control headers

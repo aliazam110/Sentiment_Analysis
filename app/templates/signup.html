@@ -47,6 +47,23 @@
             background-color: #008c44;
             border-color: #008c44;
         }
+        
+        .error-container {
+            display: none;
+            margin-bottom: 20px;
+        }
+        
+        .error-message {
+            padding: 12px 15px;
+            border-radius: 8px;
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        
+        .error-message i {
+            margin-right: 8px;
+        }
     </style>
 </head>
 <body>
@@ -63,6 +80,14 @@
                 </div>
                 
                 <div class="card-body p-4 p-md-5">
+                    <!-- Error message container -->
+                    <div id="error-container" class="error-container">
+                        <div id="error-message" class="error-message">
+                            <i class="fas fa-exclamation-circle"></i>
+                            <span id="error-text"></span>
+                        </div>
+                    </div>
+                    
                     <form id="signup-form" method="post" action="/signup">
                         <div class="mb-3">
                             <label for="name" class="form-label">Full Name</label>
@@ -121,11 +146,39 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <!-- Custom JS -->
     <script>
+        (function () {
+            const perfEntries = performance.getEntriesByType("navigation");
+            const isBackForward = perfEntries.length > 0 && perfEntries[0].type === "back_forward";
+
+            window.addEventListener('pageshow', function (event) {
+                if (event.persisted || isBackForward) {
+                    console.log("Back button detected. Forcing clean reload...");
+                    window.location.reload(true);
+                }
+            });
+        })();
+        
         document.addEventListener('DOMContentLoaded', function() {
             const form = document.getElementById('signup-form');
+            const errorContainer = document.getElementById('error-container');
+            const errorText = document.getElementById('error-text');
+            
+            // Function to show error message
+            function showError(message) {
+                errorText.textContent = message;
+                errorContainer.style.display = 'block';
+                // Scroll to error message
+                errorContainer.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+            
+            // Function to hide error message
+            function hideError() {
+                errorContainer.style.display = 'none';
+            }
             
             form.addEventListener('submit', async function(e) {
                 e.preventDefault();
+                hideError(); // Hide any previous errors
                 
                 // Basic form validation
                 const name = document.getElementById('name').value.trim();
@@ -134,25 +187,46 @@
                 const password = document.getElementById('password').value;
                 
                 if (!name || !email || !cnic || !password) {
-                    alert('Please fill in all fields');
+                    showError('Please fill in all fields');
                     return;
                 }
                 
                 // CNIC format validation (XXXXX-XXXXXXX-X)
                 const cnicRegex = /^\d{5}-\d{7}-\d{1}$/;
                 if (!cnicRegex.test(cnic)) {
-                    alert('Please enter a valid CNIC format (XXXXX-XXXXXXX-X)');
+                    showError('Please enter a valid CNIC format (XXXXX-XXXXXXX-X)');
                     return;
                 }
                 
                 // Password strength validation
                 if (password.length < 8) {
-                    alert('Password must be at least 8 characters long');
+                    showError('Password must be at least 8 characters long');
                     return;
                 }
                 
-                // Submit the form
-                form.submit();
+                // Submit the form using fetch API
+                try {
+                    const formData = new FormData(form);
+                    const response = await fetch('/signup', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    // Check if response is a redirect (success)
+                    if (response.redirected) {
+                        window.location.href = response.url;
+                        return;
+                    }
+                    
+                    // Handle error responses
+                    if (!response.ok) {
+                        const errorData = await response.json();
+                        showError(errorData.detail || 'An error occurred during registration');
+                    }
+                } catch (error) {
+                    console.error('Registration error:', error);
+                    showError('Network error. Please try again later.');
+                }
             });
         });
     </script>
